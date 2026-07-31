@@ -228,6 +228,30 @@ const timeAgo = (ts) => {
   return new Date(ts).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" });
 };
 
+// แปลงลิงก์ในข้อความให้กดได้
+const URL_SPLIT = /(https?:\/\/[^\s<]+|www\.[^\s<]+)/g;
+const Linkify = ({ text }) => {
+  return text.split(URL_SPLIT).map((part, i) => {
+    if (!part) return null;
+    if (/^(https?:\/\/|www\.)/.test(part)) {
+      const href = part.startsWith("www.") ? "https://" + part : part;
+      return (
+        <a
+          key={i}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer nofollow"
+          style={{ color: "#0E7C7B", fontWeight: 600, wordBreak: "break-all" }}
+        >
+          {part}
+        </a>
+      );
+    }
+    return part;
+  });
+};
+
+
 function TravelSite() {
   const [threads, setThreads] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -450,7 +474,7 @@ function TravelSite() {
               <div style={S.meta}>
                 โดย <strong>{current.author}</strong> · {timeAgo(current.createdAt)}
               </div>
-              <p style={S.body}>{current.body}</p>
+              <p style={S.body}><Linkify text={current.body} /></p>
             </article>
 
             <h2 style={S.sectionHead}>
@@ -464,7 +488,7 @@ function TravelSite() {
                   <div style={S.replyNum}>#{i + 1}</div>
                   <div style={{ flex: 1 }}>
                     <div style={S.meta}><strong>{r.author}</strong> · {timeAgo(r.createdAt)}</div>
-                    <p style={{ ...S.body, marginBottom: 0 }}>{r.body}</p>
+                    <p style={{ ...S.body, marginBottom: 0 }}><Linkify text={r.body} /></p>
                   </div>
                 </div>
               ))
@@ -481,7 +505,7 @@ function TravelSite() {
               />
               <textarea
                 style={{ ...S.input, minHeight: 90, resize: "vertical" }}
-                placeholder="พิมพ์ความคิดเห็น…"
+                placeholder="พิมพ์ความคิดเห็น… (วางลิงก์ได้ เดี๋ยวกดได้เลย)"
                 value={rBody}
                 onChange={(e) => setRBody(e.target.value)}
                 maxLength={2000}
@@ -514,7 +538,7 @@ function TravelSite() {
                 value={fBody}
                 onChange={(e) => setFBody(e.target.value)}
                 maxLength={4000}
-                placeholder="เล่าทริปหรือถามคำถามได้เลย…"
+                placeholder="เล่าทริปหรือถามคำถามได้เลย… (วางลิงก์เว็บ/แผนที่ได้)"
               />
               {formError && <div style={S.error}>{formError}</div>}
               <button style={S.primaryBtn} onClick={createThread} disabled={saving}>
