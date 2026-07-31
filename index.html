@@ -52,6 +52,8 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
 <div id="root"><div id="boot">
@@ -75,20 +77,56 @@ if (!window.React || !window.ReactDOM || !window.Babel) {
   showErr("โหลดไลบรารีจากอินเทอร์เน็ตไม่สำเร็จ — เช็คการเชื่อมต่อแล้วรีเฟรชอีกครั้ง");
 }
 
-// ระบบบันทึกกระทู้ด้วย localStorage (เก็บแยกเครื่องใครเครื่องมัน)
-if (!window.storage) {
-  window.storage = {
-    async get(key) {
-      var v = localStorage.getItem("lanpattaya:" + key);
-      if (v === null) throw new Error("key not found");
-      return { key: key, value: v };
-    },
-    async set(key, value) {
-      localStorage.setItem("lanpattaya:" + key, value);
-      return { key: key, value: value };
+// ═══════════════════════════════════════════════════════════════
+// ⚙️ ตั้งค่าบอร์ดสาธารณะ: วางค่า Firebase config ของคุณตรงนี้
+// (ดูวิธีสร้างในคู่มือ — ถ้ายังไม่ใส่ กระทู้จะเก็บเฉพาะในเครื่องผู้ใช้แต่ละคน)
+// ═══════════════════════════════════════════════════════════════
+window.FIREBASE_CONFIG = null;
+/* ตัวอย่างเมื่อใส่ค่าแล้ว:
+window.FIREBASE_CONFIG = {
+  apiKey: "AIza....",
+  authDomain: "lanpattaya.firebaseapp.com",
+  projectId: "lanpattaya",
+  storageBucket: "lanpattaya.appspot.com",
+  messagingSenderId: "1234567890",
+  appId: "1:1234567890:web:abcdef"
+};
+*/
+
+// ระบบบันทึกกระทู้ — เลือกอัตโนมัติ: Firebase (ทุกคนเห็นร่วมกัน) หรือ localStorage (เครื่องใครเครื่องมัน)
+window.Board = (function () {
+  var cfg = window.FIREBASE_CONFIG;
+  if (cfg && cfg.projectId && window.firebase) {
+    firebase.initializeApp(cfg);
+    var col = firebase.firestore().collection("threads");
+    return {
+      shared: true,
+      load: function () {
+        return col.orderBy("createdAt", "desc").limit(200).get().then(function (snap) {
+          return snap.docs.map(function (d) { return d.data(); });
+        });
+      },
+      createThread: function (t) { return col.doc(t.id).set(t); },
+      addReply: function (id, r) {
+        return col.doc(id).update({ replies: firebase.firestore.FieldValue.arrayUnion(r) });
+      },
+    };
+  }
+  var KEY = "lanpattaya:webboard-threads";
+  function read() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; } }
+  function write(a) { localStorage.setItem(KEY, JSON.stringify(a)); }
+  return {
+    shared: false,
+    load: function () { return Promise.resolve(read()); },
+    createThread: function (t) { var a = read(); a.unshift(t); write(a); return Promise.resolve(); },
+    addReply: function (id, r) {
+      var a = read();
+      var t = a.find(function (x) { return x.id === id; });
+      if (t) { t.replies.push(r); write(a); }
+      return Promise.resolve();
     },
   };
-}
+})();
 </script>
 <script>
 // รูปภาพทั้งหมด (base64) — อยู่นอกส่วนที่ Babel ต้องแปลง เพื่อให้โหลดเร็ว
@@ -276,8 +314,8 @@ function TravelSite() {
   useEffect(() => {
     (async () => {
       try {
-        const result = await window.storage.get(STORAGE_KEY, true);
-        if (result && result.value) setThreads(JSON.parse(result.value));
+        const list = await window.Board.load();
+        if (Array.isArray(list)) setThreads(list);
       } catch (e) {
         // ยังไม่มีข้อมูล — เริ่มจากบอร์ดว่าง
       } finally {
@@ -286,10 +324,10 @@ function TravelSite() {
     })();
   }, []);
 
-  const persist = async (next) => {
+  const persist = async (action) => {
     setSaving(true);
     try {
-      await window.storage.set(STORAGE_KEY, JSON.stringify(next), true);
+      await action();
     } catch (e) {
       console.error("บันทึกไม่สำเร็จ", e);
     } finally {
@@ -313,7 +351,7 @@ function TravelSite() {
     };
     const next = [t, ...threads];
     setThreads(next);
-    await persist(next);
+    await persist(() => window.Board.createThread(t));
     setFTitle(""); setFBody(""); setFormError("");
     setActiveThread(t.id);
     setView("thread");
@@ -324,19 +362,12 @@ function TravelSite() {
       setReplyError("กรอกชื่อและข้อความก่อนส่งคำตอบ");
       return;
     }
+    const reply = { id: `r_${Date.now()}`, author: rName.trim(), body: rBody.trim(), createdAt: Date.now() };
     const next = threads.map((t) =>
-      t.id === activeThread
-        ? {
-            ...t,
-            replies: [
-              ...t.replies,
-              { id: `r_${Date.now()}`, author: rName.trim(), body: rBody.trim(), createdAt: Date.now() },
-            ],
-          }
-        : t
+      t.id === activeThread ? { ...t, replies: [...t.replies, reply] } : t
     );
     setThreads(next);
-    await persist(next);
+    await persist(() => window.Board.addReply(activeThread, reply));
     setRBody(""); setReplyError("");
   };
 
@@ -552,6 +583,11 @@ function TravelSite() {
           /* ── หน้ารายการกระทู้ ── */
           <div>
             <h1 style={S.pageTitle}>เว็บบอร์ดนักเดินทาง</h1>
+            {!window.Board.shared && (
+              <div style={S.noticeBox}>
+                โหมดทดลอง: กระทู้ยังบันทึกเฉพาะในเครื่องนี้ — เจ้าของเว็บต้องเชื่อมต่อ Firebase ตามคู่มือ เพื่อให้ผู้เข้าชมทุกคนเห็นกระทู้ร่วมกัน
+              </div>
+            )}
             <div style={S.toolbar}>
               <div style={S.filters}>
                 <button
@@ -604,7 +640,9 @@ function TravelSite() {
       </main>
 
       <footer style={S.footer}>
-        กระทู้ทั้งหมดถูกบันทึกแบบสาธารณะ ทุกคนที่เปิดเว็บนี้จะเห็นข้อความของคุณ
+        {window.Board.shared
+          ? "กระทู้เป็นสาธารณะ ผู้เข้าชมทุกคนเห็นโพสต์ของคุณ"
+          : "ขณะนี้กระทู้บันทึกในเครื่องของคุณเท่านั้น"}
       </footer>
     </div>
   );
@@ -765,6 +803,10 @@ const styles = {
     background: "#FCFCFA", color: "#22303A",
   },
   error: { color: "#B4362E", fontSize: 14, marginBottom: 10, fontWeight: 600 },
+  noticeBox: {
+    background: "#FFF7E6", border: "1px solid #F2A93B", color: "#7A5A17",
+    borderRadius: 10, padding: "12px 16px", fontSize: 14, marginBottom: 18,
+  },
   empty: {
     textAlign: "center", color: "#6B7A85", background: "#fff",
     border: "1px dashed #C9CFC6", borderRadius: 14, padding: "48px 20px", fontSize: 15,
